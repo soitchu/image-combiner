@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      canvas {
+        image-rendering: pixelated;
+        transform-origin: 0 0;
+      }
+
+      #state,
+      #progress {
+        font-size: 2rem;
+      }
+
+      #download {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    Click on the image to translate it ("translate" here means shifting it 1
+    pixel to cycle through the images) <br />
+    Note:this demo doesn't work that well on firefox <br />
+    <button id="purge">Purge image cache</button>
+    <button id="open">Open image in new tab</button>
+    <button id="download">Download final image</button>
+    <div id="state"></div>
+    <div id="progress"></div>
+    <canvas id="canvas" data-current="0"></canvas>
+
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.3/axios.min.js"
+      integrity="sha512-JWQFV6OCC2o2x8x46YrEeFEQtzoNV++r9im8O8stv91YwHNykzIS2TbvAlFdeH0GVlpnyd79W0ZGmffcRi++Bw=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js"
+      integrity="sha512-8WThzNuMpra6ZiqTyMfenYaUKUJVEWX6KYvlcKe1I5qCHHbtt+mW7N1mwn+xRYVJ4CaVsQ014Gh2sYCZz9ZJUw=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+
+    <script>
+      const imageDb = new Dexie("imageDb");
+      imageDb.version(1.1).stores({
+        blob: "id",
+      });
+    </script>
+
+    <script>
+      function downloadImage(canvas) {
+        const anchorElem = document.createElement("a");
+        anchorElem.href = canvas.toDataURL("image/jpeg", 1.0);
+        anchorElem.download = "combined-image.jpeg";
+        anchorElem.click();
+      }
+
+      function sumArray(array) {
+        let sum = 0;
+        for (const elem of array) {
+          sum += elem;
+        }
+        return sum;
+      }
+    </script>
+
+    <script>
+      const height = window.screen.height;
+      const width = window.screen.width;
+      const canvas = document.getElementById("canvas");
+      const stateDOM = document.getElementById("state");
+      const progressDOM = document.getElementById("progress");
+      const ctx = canvas.getContext("2d");
+
+      canvas.height = height;
+      canvas.width = width;
+
+      const imageDataObj = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const imageData = imageDataObj.data;
+
+      // todo: make bandHeight actually affect things
+      let bandWidth = parseInt(
+        prompt("How many images do you want to combine together?")
+      );
+
+      if (isNaN(bandWidth)) {
+        bandWidth = 2;
+      }
+
+      const bandHeight = bandWidth;
+      const imageCount = bandHeight * bandWidth;
+
+      let loaded = Array(imageCount).fill(0);
+
+      async function fetchImage(url, index) {
+        const cachedBlob = await imageDb.blob.get(index);
+        let imageBlob;
+
+        if (cachedBlob && cachedBlob.image instanceof Blob) {
+          imageBlob = cachedBlob.image;
+          loaded[index] = 1;
+          progressDOM.innerText = `${
+            (100 * sumArray(loaded)) / loaded.length
+          }%`;
+        } else {
+          imageBlob = (
+            await axios({
+              method: "get",
+              url: url,
+              responseType: "blob",
+              onDownloadProgress: function (axiosProgressEvent) {
+                loaded[index] = axiosProgressEvent.progress;
+                progressDOM.innerText = `${
+                  (100 * sumArray(loaded)) / loaded.length
+                }%`;
+              },
+            })
+          ).data;
+
+          imageDb.blob.put({ image: imageBlob, id: index });
+        }
+        const imageURL = URL.createObjectURL(imageBlob);
+
+        return new Promise((resolve, reject) => {
+          const image = new Image(width, height);
+          image.onload = () => {
+            resolve(image);
+          };
+          image.onerror = reject;
+          image.src = imageURL;
+        });
+      }
+
+      function getImageData(image) {
+        const newCanvas = document.createElement("canvas");
+        newCanvas.height = height;
+        newCanvas.width = width;
+        newCanvas.getContext("2d").drawImage(image, 0, 0);
+        return newCanvas.getContext("2d").getImageData(0, 0, width, height);
+      }
+
+      canvas.onclick = function () {
+        const currentIndex = Number(canvas.dataset.current) + 1;
+        canvas.dataset.current = currentIndex;
+        canvas.style.transform = `scale(calc(1/${
+          bandWidth * window.devicePixelRatio
+        }), calc(1/${bandHeight * window.devicePixelRatio})) translate(${
+          currentIndex % bandWidth
+        }px, ${Math.floor(currentIndex / bandHeight) % bandHeight}px)`;
+      };
+
+      document.getElementById("purge").onclick = function () {
+        imageDb.blob.clear();
+      };
+
+      document.getElementById("download").onclick = function () {
+        downloadImage(canvas);
+      };
+
+      document.getElementById("open").onclick = function () {
+        canvas.toBlob((blob) => {
+          window.open(URL.createObjectURL(blob), "_blank");
+        });
+      };
+
+      (async function () {
+        // Getting all the images (Image object)
+        let imageURLs = [];
+        for (let i = 0; i < imageCount; i++) {
+          imageURLs.push(`https://picsum.photos/${width}/${height}`);
+        }
+
+        stateDOM.innerText =
+          "Fetching all the images (this may take a few seconds)...";
+
+        const images = await Promise.all(
+          imageURLs.map((url, index) => fetchImage(url, index))
+        );
+
+        canvas.style.transform = `scale(calc(1/${
+          bandWidth * window.devicePixelRatio
+        }), calc(1/${bandHeight * window.devicePixelRatio})) translate(0px)`;
+
+        stateDOM.innerText = "Getting all the images' ImageData";
+
+        // Getting the ImageData from the Image object
+        for (let i = 0; i < images.length; i++) {
+          images[i] = getImageData(images[i]).data;
+        }
+
+        stateDOM.innerText = "Copying all the images to the canvas...";
+
+        // Copying all the images to the canvas
+        for (let i = 0; i < imageData.length; i += 4) {
+          // x and y are the coordinates
+          const x = (i / 4) % canvas.width;
+          const y = Math.floor(i / 4 / canvas.width);
+
+          // index selects what image needs to be drawn
+          // If bandHeight is equal to bandWidth, the equation
+          // can be though of as counting in base bandHeight.
+          // so alternatively:
+
+          // const index = parseInt(`${x % bandHeight}${y % bandHeight}`, bandHeight);
+
+          // this will work with the current demo as bandHeight
+          // is always equal to bandWidth
+
+          const index = (y % bandHeight) + (x % bandWidth) * bandHeight;
+          const currentImage = images[index];
+
+          imageData[i + 0] = currentImage[i + 0];
+          imageData[i + 1] = currentImage[i + 1];
+          imageData[i + 2] = currentImage[i + 2];
+          imageData[i + 3] = 255;
+        }
+
+        ctx.putImageData(imageDataObj, 0, 0);
+        stateDOM.remove();
+        progressDOM.remove();
+        document.getElementById("download").style.display = "inline-block";
+      })();
+    </script>
+  </body>
+</html>
